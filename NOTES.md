@@ -1,6 +1,4 @@
 Reviewed by: Tejaswi Nali
-Role: Senior Full Stack Developer
-Ally Financial Services
 
 Implemented
 

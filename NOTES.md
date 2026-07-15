@@ -1,3 +1,7 @@
+Reviewed by: Tejaswi Nali
+Role: Senior Full Stack Developer
+Ally Financial Services
+
 Implemented
 
 I built the GraphQL API in `cmd/api/main.go` and connected it to the Postgres database provided by the homework setup.
@@ -32,6 +36,12 @@ I created the API entrypoint in `cmd/api/main.go` and added:
 - Postgres connection
 - HTTP handler for `/graphql`
 
+Library / structure choices
+
+I used `github.com/graphql-go/graphql` together with `github.com/graphql-go/handler`.
+
+I chose this library because it was the fastest way to build a small GraphQL API in Go without adding code generation or extra setup. For speed, I kept the implementation in `cmd/api/main.go`. With more time, I would split it into separate packages for schema, resolvers, models, and database access.
+
 How it works
 
 The API reads data from Postgres and returns it through GraphQL.
@@ -45,7 +55,7 @@ The API reads data from Postgres and returns it through GraphQL.
 Important fixes made during implementation
 
 1. Seed SQL fix  
-The seed script had a SQL issue that had to be corrected before seeding the database successfully.
+The seed script had a SQL issue in `cmd/seed/main.go`. I found it by running `go run ./cmd/seed`, reading the Postgres error, and tracing it back to the insert/query in the seed file. I fixed the SQL so the seed completed successfully.
 
 2. Database connection fix  
 The API initially used the wrong Postgres credentials. I updated it to use the homework values:
@@ -56,13 +66,10 @@ The API initially used the wrong Postgres credentials. I updated it to use the h
 - password: `todo`
 - database: `homework`
 
-3. Missing `tags` column  
-The GraphQL model expected `tags`, but the database table did not include it. I added the missing `tags` column to the `tasks` table so the schema and API matched.
-
-4. Nullable field handling  
+3. Nullable field handling  
 Some seeded rows had `NULL` values for `description`, which caused scanning errors in Go. I handled this using `COALESCE` in the SQL queries.
 
-5. Status enum mapping  
+4. Status enum mapping  
 Postgres stores task status values in lowercase like:
 
 - `pending`
@@ -79,10 +86,19 @@ I added mapping in both directions:
 - GraphQL to Postgres for writes and filters
 - Postgres to GraphQL for API responses
 
-6. Nested user resolver fix  
+5. Nested user resolver fix  
 The nested `user` field on `Task` needed to handle both `Task` and `*Task` so that it worked for both:
 - `tasks`
 - `task(id)`
+
+6. Tags handling  
+I aligned tag handling with the provided schema through `task_tags`.
+
+New field
+
+I picked `dueDate` as the field to expose end to end.
+
+I chose it because it already existed in the database and was the simplest field to expose cleanly through the database, API, and UI.
 
 Validation completed
 
@@ -98,24 +114,34 @@ I tested the following successfully in GraphiQL:
 - `createTask(...)`
 - `updateTaskStatus(...)`
 
-Assumptions
+I also verified the browser UI loads users and tasks and displays `dueDate`.
 
-- Docker/Postgres is started through `docker compose`
-- Postgres is available on `localhost:5432`
-- The seeded schema is the source of truth for users and tasks
-- The homework expects the GraphQL API to be implemented in Go even though the starter repo did not include a ready API server entrypoint
-
-Limitations
+Tradeoffs / what I skipped
 
 - The implementation is currently in a single file: `cmd/api/main.go`
-- For a production setup, I would split this into separate packages for:
-  - schema
-  - resolvers
-  - database access
-  - models
-- Error handling and validation could be expanded further
-- Database migrations for schema changes like `tags` could be formalized instead of applied manually
+- I did not add a full automated test suite
+- I did not add structured logging
+- I did not add a Dockerfile for the API
+
+With more time, I would:
+- split the API into packages
+- add tests for resolvers and database queries
+- improve validation and error handling
+- clean up migrations and project structure further
+
+How to run everything from a fresh clone
+
+1. `git clone <repo-url>`
+2. `cd go-interview-homework`
+3. `docker compose up -d`
+4. `go run ./cmd/seed`
+5. `go run ./cmd/api`
+6. In another terminal: `python3 -m http.server 8081 --directory web`
+7. Open GraphQL at `http://localhost:8080/graphql`
+8. Open the UI at `http://localhost:8081`
 
 Summary
 
-The GraphQL service is working locally, connected to the seeded Postgres database, and the required queries and mutations are implemented and verified end to end.
+The GraphQL service is working locally, connected to the seeded Postgres database, and the required queries and mutations are implemented and verified end to end. I also exposed `dueDate` through the UI.
+AI usage:
+- I used AI tools for debugging help and implementation guidance, and I verified the final code and behavior myself.

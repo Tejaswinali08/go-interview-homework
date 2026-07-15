@@ -15,8 +15,9 @@ import (
 )
 
 type User struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
+	ID    int    `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
 }
 
 type Task struct {
@@ -56,17 +57,8 @@ func toGraphQLStatus(s string) string {
 		return ""
 	}
 }
-func getUserByID(id int) (*User, error) {
-	u := &User{}
-	err := db.QueryRow(`SELECT id, name FROM users WHERE id = $1`, id).Scan(&u.ID, &u.Name)
-	if err != nil {
-		return nil, err
-	}
-	return u, nil
-}
-
 func getAllUsers() ([]User, error) {
-	rows, err := db.Query(`SELECT id, name FROM users ORDER BY id`)
+	rows, err := db.Query(`SELECT id, email, name FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +67,7 @@ func getAllUsers() ([]User, error) {
 	var users []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Name); err != nil {
+		if err := rows.Scan(&u.ID, &u.Email, &u.Name); err != nil {
 			return nil, err
 		}
 		users = append(users, u)
@@ -85,30 +77,35 @@ func getAllUsers() ([]User, error) {
 
 func getTaskByID(id int) (*Task, error) {
 	t := &Task{}
-	var tags []string
 
 	err := db.QueryRow(`
 		SELECT id, user_id, title, COALESCE(description, ''), status,
-		       COALESCE(due_date::text, ''),
-		       COALESCE(tags, ARRAY[]::text[])
+		       COALESCE(due_date::text, '')
 		FROM tasks
 		WHERE id = $1
-	`, id).Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.DueDate, pq.Array(&tags))
+	`, id).Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.DueDate)
 	if err != nil {
 		return nil, err
 	}
+
 	t.Status = toGraphQLStatus(t.Status)
+
+	tags, err := getTagsForTask(t.ID)
+	if err != nil {
+		return nil, err
+	}
 	t.Tags = tags
+
 	return t, nil
 }
 
 func getTasks(status string, userID int, hasStatus bool, hasUserID bool) ([]Task, error) {
 	query := `
 		SELECT id, user_id, title, COALESCE(description, ''), status,
-		       COALESCE(due_date::text, ''),
-		       COALESCE(tags, ARRAY[]::text[])
+		       COALESCE(due_date::text, '')
 		FROM tasks
 	`
+
 	var conditions []string
 	var args []interface{}
 
@@ -137,19 +134,80 @@ func getTasks(status string, userID int, hasStatus bool, hasUserID bool) ([]Task
 	var tasks []Task
 	for rows.Next() {
 		var t Task
-		var tags []string
 
-		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.DueDate, pq.Array(&tags)); err != nil {
+		if err := rows.Scan(&t.ID, &t.UserID, &t.Title, &t.Description, &t.Status, &t.DueDate); err != nil {
 			return nil, err
 		}
+
 		t.Status = toGraphQLStatus(t.Status)
+
+		tags, err := getTagsForTask(t.ID)
+		if err != nil {
+			return nil, err
+		}
 		t.Tags = tags
+
 		tasks = append(tasks, t)
 	}
 
 	return tasks, rows.Err()
 }
 
+func getTasksByUser(userID int, status string, hasStatus bool) ([]Task, error) {
+	return getTasks(status, userID, hasStatus, true)
+}
+
+func getTagsForTask(taskID int) ([]string, error) {
+	rows, err := db.Query(`SELECT tag FROM task_tags WHERE task_id = $1 ORDER BY tag`, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var tags []string
+	for rows.Next() {
+		var tag string
+		if err := rows.Scan(&tag); err != nil {
+			return nil, err
+		}
+		tags = append(tags, tag)
+	}
+
+	return tags, rows.Err()
+}
+
+func insertTags(taskID int, tags []string) error {
+	for _, tag := range tags {
+		_, err := db.Exec(`INSERT INTO task_tags (task_id, tag) VALUES ($1, $2)`, taskID, tag)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+func getUserByID(id int) (*User, error) {
+	u := &User{}
+	err := db.QueryRow(`SELECT id, email, name FROM users WHERE id = $1`, id).Scan(&u.ID, &u.Email, &u.Name)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return u, nil
+}
+func toDBStatus(s string) string {
+	switch s {
+	case "PENDING":
+		return "pending"
+	case "IN_PROGRESS":
+		return "in_progress"
+	case "DONE":
+		return "done"
+	default:
+		return s
+	}
+}
 func main() {
 	// If this does not match your seed file, replace this line with the exact DB string from cmd/seed/main.go
 	connStr := "postgres://admin:todo@localhost:5432/homework?sslmode=disable"
@@ -173,37 +231,69 @@ func main() {
 		},
 	})
 
-	userType := graphql.NewObject(graphql.ObjectConfig{
+	var userType *graphql.Object
+	var taskType *graphql.Object
+
+	userType = graphql.NewObject(graphql.ObjectConfig{
 		Name: "User",
-		Fields: graphql.Fields{
-			"id":   &graphql.Field{Type: graphql.ID},
-			"name": &graphql.Field{Type: graphql.String},
-		},
+		Fields: graphql.FieldsThunk(func() graphql.Fields {
+			return graphql.Fields{
+				"id":    &graphql.Field{Type: graphql.NewNonNull(graphql.ID)},
+				"email": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+				"name":  &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+				"tasks": &graphql.Field{
+					Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(taskType))),
+					Args: graphql.FieldConfigArgument{
+						"status": &graphql.ArgumentConfig{Type: taskStatusEnum},
+					},
+					Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+						var u User
+						switch src := p.Source.(type) {
+						case User:
+							u = src
+						case *User:
+							u = *src
+						default:
+							return []Task{}, nil
+						}
+
+						status, hasStatus := p.Args["status"].(string)
+						if hasStatus {
+							status = toDBStatus(status)
+						}
+
+						return getTasksByUser(u.ID, status, hasStatus)
+					},
+				},
+			}
+		}),
 	})
 
-	taskType := graphql.NewObject(graphql.ObjectConfig{
+	taskType = graphql.NewObject(graphql.ObjectConfig{
 		Name: "Task",
-		Fields: graphql.Fields{
-			"id":          &graphql.Field{Type: graphql.ID},
-			"title":       &graphql.Field{Type: graphql.String},
-			"description": &graphql.Field{Type: graphql.String},
-			"status":      &graphql.Field{Type: taskStatusEnum},
-			"dueDate":     &graphql.Field{Type: graphql.String},
-			"tags":        &graphql.Field{Type: graphql.NewList(graphql.String)},
-			"user": &graphql.Field{
-				Type: userType,
-				Resolve: func(p graphql.ResolveParams) (interface{}, error) {
-					switch t := p.Source.(type) {
-					case Task:
-						return getUserByID(t.UserID)
-					case *Task:
-						return getUserByID(t.UserID)
-					default:
-						return nil, nil
-					}
+		Fields: graphql.FieldsThunk(func() graphql.Fields {
+			return graphql.Fields{
+				"id":          &graphql.Field{Type: graphql.NewNonNull(graphql.ID)},
+				"title":       &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+				"description": &graphql.Field{Type: graphql.String},
+				"status":      &graphql.Field{Type: graphql.NewNonNull(taskStatusEnum)},
+				"dueDate":     &graphql.Field{Type: graphql.String},
+				"tags":        &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(graphql.String)))},
+				"user": &graphql.Field{
+					Type: graphql.NewNonNull(userType),
+					Resolve: func(p graphql.ResolveParams) (interface{}, error) {
+						switch t := p.Source.(type) {
+						case Task:
+							return getUserByID(t.UserID)
+						case *Task:
+							return getUserByID(t.UserID)
+						default:
+							return nil, nil
+						}
+					},
 				},
-			},
-		},
+			}
+		}),
 	})
 	rootQuery := graphql.NewObject(graphql.ObjectConfig{
 		Name: "Query",
@@ -347,7 +437,18 @@ func main() {
 		GraphiQL: true,
 	})
 
-	http.Handle("/graphql", h)
+	http.Handle("/graphql", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		h.ServeHTTP(w, r)
+	}))
 
 	log.Println("listening on :8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))

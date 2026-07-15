@@ -17,6 +17,7 @@ const QUERY = `
         title
         status
         tags
+        dueDate
       }
     }
   }
@@ -55,6 +56,10 @@ function el(tag, attrs = {}, children = []) {
 function renderTask(task) {
   const title = el("div", { class: "task-title", text: task.title });
 
+  const dueDate = el("div", {
+    class: "task-due-date",
+    text: `Due Date: ${task.dueDate || "N/A"}`,
+  });
   const statusPill = el("span", {
     class: `status-pill ${task.status.toLowerCase()}`,
     text: task.status.replace("_", " "),
@@ -66,13 +71,12 @@ function renderTask(task) {
     meta.appendChild(el("span", { class: "tag", text: tag }));
   }
 
-  return el("li", { class: "task" }, [title, meta]);
+  return el("li", { class: "task" }, [title, dueDate, meta]);
 }
 
 function renderUser(user) {
   const heading = el("h2", { text: user.name });
   const email = el("p", { class: "email", text: user.email });
-
   const tasks = el(
     "ul",
     { class: "task-list" },
